@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="es" class="bg-gray-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeoAPI  - API de Geolocalización</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    #map { height: 500px; border-radius: 12px; }
+    .log { font-family: monospace; font-size: 0.9rem; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div class="max-w-7xl mx-auto p-6">
+    <header class="mb-10 text-center">
+      <h1 class="text-4xl font-bold text-blue-700">🌍 GeoAPI <span class="text-green-600 text-2xl">(Real)</span></h1>
+      <p class="text-gray-600 mt-2">Usando API real de BigDataCloud + Geolocation del navegador</p>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <!-- Controles -->
+      <div class="lg:col-span-5 space-y-8">
+        
+        <div class="bg-white rounded-2xl shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">📍 Obtener Ubicación Actual </h2>
+          <button onclick="getCurrentLocation()" 
+                  class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-xl transition">
+            Obtener mi ubicación + Dirección 
+          </button>
+          <div id="current-location" class="mt-4 text-sm"></div>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">➕ Agregar Ubicación Manual</h2>
+          <form id="add-form" onsubmit="addLocation(event)">
+            <input type="text" id="name" placeholder="Nombre de la ubicación" 
+                   class="w-full p-3 border rounded-xl mb-3">
+            <div class="grid grid-cols-2 gap-3">
+              <input type="number" id="lat" step="any" placeholder="Latitud" required
+                     class="w-full p-3 border rounded-xl">
+              <input type="number" id="lon" step="any" placeholder="Longitud" required
+                     class="w-full p-3 border rounded-xl">
+            </div>
+            <button type="submit"
+                    class="mt-4 w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 rounded-xl transition">
+              Guardar + Obtener Dirección Real
+            </button>
+          </form>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">📡 Logs de API </h2>
+          <div id="api-logs" class="log space-y-3 max-h-80 overflow-y-auto text-xs bg-gray-900 text-green-400 p-4 rounded-xl"></div>
+        </div>
+      </div>
+
+      <!-- Lista -->
+      <div class="lg:col-span-3">
+        <div class="bg-white rounded-2xl shadow p-6 h-full">
+          <h2 class="text-xl font-semibold mb-4">📋 Ubicaciones Guardadas</h2>
+          <div id="locations-list" class="space-y-3"></div>
+        </div>
+      </div>
+
+      <!-- Mapa -->
+      <div class="lg:col-span-4">
+        <div class="bg-white rounded-2xl shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">🗺️ Mapa</h2>
+          <div id="map"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let locations = JSON.parse(localStorage.getItem('geoLocations')) || [];
+    let map, markerGroup;
+
+    function initMap() {
+      map = L.map('map').setView([19.4326, -99.1332], 6);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+      markerGroup = L.layerGroup().addTo(map);
+      renderMarkers();
+    }
+
+    function saveToLocalStorage() {
+      localStorage.setItem('geoLocations', JSON.stringify(locations));
+    }
+
+    function logAPI(method, endpoint, body = null, response = null) {
+      const logs = document.getElementById('api-logs');
+      const time = new Date().toLocaleTimeString();
+      let html = `<div class="border-l-4 border-blue-500 pl-3"><strong>${time} ${method} ${endpoint}</strong>`;
+      if (body) html += `<pre class="text-xs mt-1 text-gray-300">→ ${JSON.stringify(body, null, 2)}</pre>`;
+      if (response) html += `<pre class="text-xs mt-1 text-green-300">← ${JSON.stringify(response, null, 2)}</pre>`;
+      html += `</div>`;
+      logs.innerHTML += html;
+      logs.scrollTop = logs.scrollHeight;
+    }
+
+    // === API REAL: BigDataCloud Reverse Geocoding ===
+    async function getAddressFromCoords(lat, lon) {
+      try {
+        logAPI('GET', `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=es`);
+        
+        const res = await fetch(
+          `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=es`
+        );
+        const data = await res.json();
+
+        const address = {
+          city: data.city || data.locality || 'Desconocido',
+          country: data.countryName || 'Desconocido',
+          full: data.description || `${data.city || data.locality}, ${data.countryName}`
+        };
+
+        logAPI('GET', 'BigDataCloud API', null, data);
+        return address;
+      } catch (err) {
+        console.error(err);
+        logAPI('GET', 'BigDataCloud API', null, { error: err.message });
+        return null;
+      }
+    }
+
+    // Validación de coordenadas
+    function validateCoordinates(lat, lon) {
+      lat = parseFloat(lat);
+      lon = parseFloat(lon);
+      if (isNaN(lat) || lat < -90 || lat > 90) return false;
+      if (isNaN(lon) || lon < -180 || lon > 180) return false;
+      return { lat, lon };
+    }
+
+    // Obtener ubicación actual + dirección real
+    async function getCurrentLocation() {
+      const resultDiv = document.getElementById('current-location');
+      resultDiv.innerHTML = `<p class="text-blue-600">Obteniendo ubicación y dirección...</p>`;
+
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true });
+        });
+
+        const { latitude, longitude } = position.coords;
+        const address = await getAddressFromCoords(latitude, longitude);
+
+        let html = `
+          <div class="bg-blue-50 p-4 rounded-xl space-y-2">
+            <p><strong>Latitud:</strong> ${latitude.toFixed(6)}</p>
+            <p><strong>Longitud:</strong> ${longitude.toFixed(6)}</p>`;
+        
+        if (address) {
+          html += `<p><strong>Dirección:</strong> ${address.full}</p>
+                   <p><strong>Ciudad:</strong> ${address.city} • <strong>País:</strong> ${address.country}</p>`;
+        }
+        html += `</div>`;
+        resultDiv.innerHTML = html;
+
+        logAPI('GET', '/api/geolocation/current', null, { lat: latitude, lon: longitude, address });
+      } catch (err) {
+        resultDiv.innerHTML = `<p class="text-red-500">Error: ${err.message}</p>`;
+      }
+    }
+
+    // Agregar ubicación + dirección real
+    async function addLocation(e) {
+      e.preventDefault();
+      const name = document.getElementById('name').value.trim();
+      const latInput = document.getElementById('lat').value;
+      const lonInput = document.getElementById('lon').value;
+
+      const coords = validateCoordinates(latInput, lonInput);
+      if (!coords) {
+        alert("Coordenadas inválidas (Lat: -90 a 90, Lon: -180 a 180)");
+        return;
+      }
+
+      const address = await getAddressFromCoords(coords.lat, coords.lon);
+
+      const newLocation = {
+        id: Date.now(),
+        name: name || `Ubicación ${locations.length + 1}`,
+        lat: coords.lat,
+        lon: coords.lon,
+        address: address ? address.full : null,
+        city: address ? address.city : null,
+        timestamp: new Date().toISOString()
+      };
+
+      locations.push(newLocation);
+      saveToLocalStorage();
+      renderLocations();
+      renderMarkers();
+
+      logAPI('POST', '/api/locations', { name, lat: coords.lat, lon: coords.lon }, newLocation);
+
+      document.getElementById('add-form').reset();
+    }
+
+    function renderLocations() {
+      const container = document.getElementById('locations-list');
+      container.innerHTML = '';
+
+      if (locations.length === 0) {
+        container.innerHTML = `<p class="text-gray-400">Sin ubicaciones guardadas</p>`;
+        return;
+      }
+
+      locations.forEach(loc => {
+        const div = document.createElement('div');
+        div.className = "bg-gray-50 p-4 rounded-xl hover:bg-gray-100 transition";
+        div.innerHTML = `
+          <p class="font-medium">${loc.name}</p>
+          <p class="text-xs text-gray-500">${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}</p>
+          ${loc.address ? `<p class="text-sm text-green-600 mt-1">${loc.address}</p>` : ''}
+          <button onclick="deleteLocation(${loc.id})" 
+                  class="mt-2 text-red-500 hover:text-red-700 text-xs">Eliminar</button>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    function deleteLocation(id) {
+      if (!confirm("¿Eliminar esta ubicación?")) return;
+      locations = locations.filter(l => l.id !== id);
+      saveToLocalStorage();
+      renderLocations();
+      renderMarkers();
+      logAPI('DELETE', `/api/locations/${id}`);
+    }
+
+    function renderMarkers() {
+      markerGroup.clearLayers();
+      locations.forEach(loc => {
+        const marker = L.marker([loc.lat, loc.lon]).addTo(markerGroup);
+        const popupContent = loc.address 
+          ? `<b>${loc.name}</b><br>${loc.address}<br><small>${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}</small>`
+          : `<b>${loc.name}</b><br>${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}`;
+        marker.bindPopup(popupContent);
+      });
+    }
+
+    window.onload = () => {
+      initMap();
+      renderLocations();
+      renderMarkers();
+    };
+  </script>
+</body>
+</html>
